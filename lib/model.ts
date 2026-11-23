@@ -24,6 +24,12 @@
 //
 //   implied_value_usd = round(tvl_usd x category_multiple x growth x maturity x breadth), at least $1.
 //
+//   5. The range. A point value hides how far apart the peers are, so each row also carries the
+//      value at its category's shrunk peer quartiles (the 25th and 75th percentile ratios, shrunk
+//      toward the market-wide quartiles exactly as the median is shrunk): value_low_usd and
+//      value_high_usd. A category whose peers agree has a narrow range; one whose peers scatter
+//      shows it, and the reader can see which rows rest on solid evidence and which on a guess.
+//
 // The board is the snapshot's watchlist (the floor: every slug, whatever the model says) plus the
 // highest-valued further pre-token protocols under the watchlist's own exclusions — no exchanges, no
 // bridges or restaked wrappers of a token that already trades, no versioned pools; small independent
@@ -56,7 +62,7 @@ export interface Snapshot {
 }
 
 /** The model's version label, stated in the dashboard so a reader can cite the model that ranked a row. */
-export const MODEL_VERSION = 'peer-multiple-2';
+export const MODEL_VERSION = 'peer-multiple-3';
 
 /** Total rows on the board: the 40 watchlist slugs plus the best further pre-token protocols. */
 export const BOARD_ROWS = 250;
@@ -90,6 +96,11 @@ export interface CategoryStat {
   peers: number;
   median_ratio: number;
   multiple: number;
+  /** The peer ratios' quartiles, shrunk the same way as the median: the spread of the evidence. */
+  q1_ratio: number;
+  q3_ratio: number;
+  multiple_low: number;
+  multiple_high: number;
 }
 
 /** The model's market-wide figures, computed from the snapshot's trading protocols. */
@@ -125,8 +136,18 @@ export interface BoardRow {
     maturity_multiplier: number;
     breadth_multiplier: number;
     age_days: number | null;
+    /** The implied value at the category's shrunk peer quartiles: the range the evidence supports. */
+    value_low_usd: number;
+    value_high_usd: number;
   };
   farm_steps: string[];
+  /** The farm plan's totals, from the same figures its steps carry: capital, fees, hold, weekly time. */
+  farm_summary: {
+    capital_usd: number;
+    fees_usd: number;
+    hold_days: number;
+    minutes_per_week: number;
+  };
 }
 
 /** The dashboard's view of one board row: the row itself, farm plan included, so page and board agree. */
@@ -191,6 +212,17 @@ function median(values: number[]): number {
   return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
 }
 
+/** A quantile of a non-empty list, by linear interpolation on the sorted values (the type-7 rule). */
+function quantile(values: number[], q: number): number {
+  const sorted = [...values].sort((a, b) => a - b);
+  if (sorted.length === 1) return sorted[0]!;
+  const pos = (sorted.length - 1) * q;
+  const base = Math.floor(pos);
+  const rest = pos - base;
+  const next = sorted[base + 1];
+  return next === undefined ? sorted[base]! : sorted[base]! + rest * (next - sorted[base]!);
+}
+
 /** Whether a protocol records no token at all: no market cap, no CoinGecko id, no symbol. */
 export function isPreToken(p: SnapshotProtocol): boolean {
   return p.mcap_usd === null && p.gecko_id === null && p.symbol === null;
@@ -214,6 +246,10 @@ export function marketStats(snapshot: Snapshot): MarketStats {
     else list.push(ratio);
   }
   const globalMedian = all.length > 0 ? median(all) : 0.25;
+  const globalQ1 = all.length > 0 ? quantile(all, 0.25) : globalMedian;
+  const globalQ3 = all.length > 0 ? quantile(all, 0.75) : globalMedian;
+  const shrink = (n: number, value: number, global: number): number =>
+    (n * value + SHRINK_PEERS * global) / (n + SHRINK_PEERS);
   const categories: CategoryStat[] = [...ratiosByCategory.entries()]
     .map(([category, ratios]) => {
       const med = median(ratios);
@@ -221,18 +257,24 @@ export function marketStats(snapshot: Snapshot): MarketStats {
         category,
         peers: ratios.length,
         median_ratio: round4(med),
-        multiple: round4((ratios.length * med + SHRINK_PEERS * globalMedian) / (ratios.length + SHRINK_PEERS)),
+        multiple: round4(shrink(ratios.length, med, globalMedian)),
+        q1_ratio: round4(quantile(ratios, 0.25)),
+        q3_ratio: round4(quantile(ratios, 0.75)),
+        multiple_low: round4(shrink(ratios.length, quantile(ratios, 0.25), globalQ1)),
+        multiple_high: round4(shrink(ratios.length, quantile(ratios, 0.75), globalQ3)),
       };
     })
     .sort((a, b) => b.multiple - a.multiple || (a.category < b.category ? -1 : 1));
   return { global_median: round4(globalMedian), peer_count: all.length, categories };
 }
 
-/** The multiple one category trades at under the model; the global median when it has no peers. */
-function multipleFor(stats: MarketStats, category: string | null): { multiple: number; peers: number } {
+/** The multiples one category trades at under the model; the global figures when it has no peers. */
+function multipleFor(stats: MarketStats, category: string | null): { multiple: number; low: number; high: number; peers: number } {
   const key = category ?? 'Uncategorised';
   const stat = stats.categories.find((c) => c.category === key);
-  return stat === undefined ? { multiple: stats.global_median, peers: 0 } : { multiple: stat.multiple, peers: stat.peers };
+  return stat === undefined
+    ? { multiple: stats.global_median, low: stats.global_median, high: stats.global_median, peers: 0 }
+    : { multiple: stat.multiple, low: stat.multiple_low, high: stat.multiple_high, peers: stat.peers };
 }
 
 /** The four factors and the implied value one protocol gets under the model. */
@@ -240,16 +282,22 @@ export function impliedValue(
   protocol: SnapshotProtocol,
   asOf: string,
   stats: MarketStats,
-): { implied: number; multiple: number; peers: number; growthPct: number; growthMult: number; maturityMult: number; breadthMult: number; age: number | null } {
+): { implied: number; low: number; high: number; multiple: number; peers: number; growthPct: number; growthMult: number; maturityMult: number; breadthMult: number; age: number | null } {
   const age = ageDays(asOf, protocol.listed_at);
-  const { multiple, peers } = multipleFor(stats, protocol.category);
+  const { multiple, low, high, peers } = multipleFor(stats, protocol.category);
   const growthPct = clamp(protocol.change_7d ?? 0, GROWTH_FLOOR, GROWTH_CAP);
   const growthMult = 1 + (growthPct / 100) * GROWTH_WEIGHT;
   const ageForModel = age ?? UNKNOWN_AGE_DAYS;
   const maturityMult = MATURITY_FLOOR + (Math.min(Math.max(ageForModel, 0), MATURITY_DAYS) / MATURITY_DAYS) * MATURITY_SPAN;
   const breadthMult = 1 + CHAIN_STEP * Math.min(Math.max(protocol.chains.length - 1, 0), CHAIN_MAX_EXTRA);
-  const implied = Math.max(1, Math.round(protocol.tvl_usd * multiple * growthMult * maturityMult * breadthMult));
-  return { implied, multiple, peers, growthPct, growthMult, maturityMult, breadthMult, age };
+  const rest = growthMult * maturityMult * breadthMult;
+  const implied = Math.max(1, Math.round(protocol.tvl_usd * multiple * rest));
+  return {
+    implied,
+    low: Math.max(1, Math.round(protocol.tvl_usd * low * rest)),
+    high: Math.max(1, Math.round(protocol.tvl_usd * high * rest)),
+    multiple, peers, growthPct, growthMult, maturityMult, breadthMult, age,
+  };
 }
 
 /** DefiLlama's version-marker rule: a name ending in a release is a pool of another protocol. */
@@ -324,8 +372,11 @@ export function buildBoard(snapshot: Snapshot): BoardRow[] {
       maturity_multiplier: round4(s.v.maturityMult),
       breadth_multiplier: round4(s.v.breadthMult),
       age_days: s.v.age,
+      value_low_usd: s.v.low,
+      value_high_usd: s.v.high,
     },
     farm_steps: farmSteps(s.p, s.v.age),
+    farm_summary: farmSummary(s.p, s.v.age),
   }));
 }
 
@@ -453,6 +504,23 @@ export function farmSteps(p: SnapshotProtocol, age: number | null): string[] {
     `When a token launches or the hold ends, claim through the official announcement only, then decide with the log in front of you: sell half at listing to recover the $${capital} stake and let the rest ride, or withdraw in full. Cost: ${gas} to claim and exit. Time: 30 minutes, once.`,
   ];
   return steps.map((s) => (s.length > 600 ? `${s.slice(0, 596)}...` : s));
+}
+
+/**
+ * A farm plan's totals, from the same helpers its steps are built with: the capital tier for the
+ * protocol's TVL, one funding transaction, one weekly action per week of the hold, one exit
+ * transaction, and the weekly minutes the steps themselves state (10 to act, 5 to check the log).
+ */
+export function farmSummary(p: SnapshotProtocol, age: number | null): { capital_usd: number; fees_usd: number; hold_days: number; minutes_per_week: number } {
+  const chain = chainOf(p);
+  const hold = holdDaysFor(age);
+  const weeks = Math.max(2, Math.round(hold / 7));
+  return {
+    capital_usd: capitalFor(p),
+    fees_usd: Math.max(1, Math.round((weeks + 2) * gasUsd(chain))),
+    hold_days: hold,
+    minutes_per_week: 15,
+  };
 }
 
 /** The live-token protocols, by market cap, for the dashboard's Live view: the market's own values. */

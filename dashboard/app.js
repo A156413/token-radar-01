@@ -240,7 +240,8 @@
     drawer.appendChild(el('div', { 'class': 'hero' },
       el('div', { 'class': 'k', text: 'Implied token value' }),
       el('div', { 'class': 'v', text: fmtUsd(r.implied_value_usd) }),
-      el('div', { 'class': 's', text: r.implied_tvl_ratio.toFixed(2) + 'x its TVL of ' + fmtUsd(r.tvl_usd) + ', at the ' + (r.category || 'market') + ' peer multiple' })
+      el('div', { 'class': 's', text: r.implied_tvl_ratio.toFixed(2) + 'x its TVL of ' + fmtUsd(r.tvl_usd) + ', at the ' + (r.category || 'market') + ' peer multiple' }),
+      el('div', { 'class': 's', text: 'Peer range ' + fmtUsd(m.value_low_usd) + ' - ' + fmtUsd(m.value_high_usd) + ': the same arithmetic at the category\u2019s lower and upper peer quartiles, so the spread of the evidence is on the page, not hidden behind the point value' })
     ));
     drawer.appendChild(el('div', { 'class': 'grid2' },
       kv('TVL', fmtUsd(r.tvl_usd)), kv('TVL change, 7d', fmtPct(r.change_7d)),
@@ -256,9 +257,15 @@
       mrow('Momentum, 7d change ' + fmtPct(r.change_7d), m.growth_multiplier.toFixed(3) + 'x'),
       mrow('Track record, ' + fmtAge(r.age_days) + ' with no token', m.maturity_multiplier.toFixed(3) + 'x'),
       mrow('Breadth, ' + r.chains.length + (r.chains.length === 1 ? ' chain' : ' chains'), m.breadth_multiplier.toFixed(3) + 'x'),
-      mrow('Implied value', fmtUsd(r.implied_value_usd))
+      mrow('Implied value', fmtUsd(r.implied_value_usd)),
+      mrow('At the peer quartiles instead', fmtUsd(m.value_low_usd) + ' - ' + fmtUsd(m.value_high_usd))
     )));
     drawer.appendChild(el('h3', { text: 'The farm plan' }));
+    var fs = r.farm_summary;
+    drawer.appendChild(el('div', { 'class': 'grid2' },
+      kv('Capital', fmtUsd(fs.capital_usd)), kv('Fees over the hold', 'about ' + fmtUsd(fs.fees_usd)),
+      kv('Hold', fs.hold_days + ' days'), kv('Time', 'about ' + fs.minutes_per_week + ' min a week')
+    ));
     var plan = el('ol', { 'class': 'plan' });
     r.farm_steps.forEach(function (s) { plan.appendChild(el('li', { text: s })); });
     drawer.appendChild(plan);
@@ -322,6 +329,11 @@
     wrap.appendChild(el('h3', { text: '4. Breadth - distribution a launch can reach' }));
     wrap.appendChild(el('p', null, 'Each chain past the first adds 3%, up to seven extra chains (1.21x): a protocol already operating on many chains ' +
       'puts a future token in more hands on day one.'));
+    wrap.appendChild(el('h3', { text: '5. The range - how far apart the peers are' }));
+    wrap.appendChild(el('p', null, 'A point value hides the disagreement inside a category, so every row also carries a range: the same arithmetic with the ' +
+      'category\u2019s multiple replaced by its shrunk lower and upper peer quartiles (the 25th and 75th percentile ratios, shrunk toward the market-wide quartiles ' +
+      'with the same peer-count weight). Where the peers agree, the range is narrow and the point value rests on solid evidence; where they scatter, the range ' +
+      'says so on the page. Each protocol\u2019s detail view shows its range beside its value, and the evidence table below carries every category\u2019s quartiles.'));
     wrap.appendChild(el('h3', { text: 'Who is on the board' }));
     wrap.appendChild(el('p', null, 'The board holds ' + DATA.board_size + ' rows: every one of the ' + DATA.watchlist_size + ' watchlist slugs (pre-token protocols at or above the $' +
       Math.round(DATA.floor_usd / 1e6) + 'M floor, the floor the coverage check holds), plus the ' + DATA.early_size + ' highest-valued further pre-token protocols under the same exclusions - ' +
@@ -334,11 +346,12 @@
         el('td', { text: c.category }),
         el('td', { 'class': 'num', text: String(c.peers) }),
         el('td', { 'class': 'num', text: c.median_ratio.toFixed(3) + 'x' }),
-        el('td', { 'class': 'num', text: c.multiple.toFixed(3) + 'x' })
+        el('td', { 'class': 'num', text: c.multiple.toFixed(3) + 'x' }),
+        el('td', { 'class': 'num', text: c.q1_ratio.toFixed(3) + 'x - ' + c.q3_ratio.toFixed(3) + 'x' })
       ));
     });
     wrap.appendChild(el('table', null,
-      el('thead', null, el('tr', null, el('th', { text: 'Category' }), el('th', { text: 'Trading peers' }), el('th', { text: 'Median mcap / TVL' }), el('th', { text: 'Multiple used' }))),
+      el('thead', null, el('tr', null, el('th', { text: 'Category' }), el('th', { text: 'Trading peers' }), el('th', { text: 'Median mcap / TVL' }), el('th', { text: 'Multiple used' }), el('th', { text: 'Peer quartiles' }))),
       body));
     wrap.appendChild(el('div', { 'class': 'note', text: 'Read the board as a claim, not a forecast: it says what a token would be worth if the protocol\u2019s record stayed as it is. ' +
       'It does not say a token will be issued, or when, and a protocol that records no token in DefiLlama\u2019s data may still have one the record does not carry.' }));
