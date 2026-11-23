@@ -113,6 +113,16 @@
     );
     app.appendChild(stats);
 
+    if (DATA.insights && DATA.insights.length) {
+      var strip = el('div', { 'class': 'stats' });
+      DATA.insights.forEach(function (ins) {
+        strip.appendChild(el('div', { 'class': 'stat' },
+          el('div', { 'class': 'k', text: ins.title }),
+          el('div', { 'class': 's', text: ins.body })));
+      });
+      app.appendChild(strip);
+    }
+
     var categories = unique(DATA.rows.map(function (r) { return r.category || 'Uncategorised'; }));
     var chains = unique(DATA.rows.reduce(function (a, r) { return a.concat(r.chains); }, []));
     var search = el('input', { type: 'search', placeholder: 'Search name or slug', value: state.q, 'aria-label': 'Search protocols' });
@@ -260,6 +270,16 @@
       mrow('Implied value', fmtUsd(r.implied_value_usd)),
       mrow('At the peer quartiles instead', fmtUsd(m.value_low_usd) + ' - ' + fmtUsd(m.value_high_usd))
     )));
+    var catStat = null;
+    DATA.market.categories.forEach(function (c) { if (c.category === (r.category || 'Uncategorised')) catStat = c; });
+    if (catStat && catStat.peer_examples && catStat.peer_examples.length) {
+      drawer.appendChild(el('h3', { text: 'The peers behind the multiple' }));
+      drawer.appendChild(el('p', { 'class': 'sub', text: 'The largest trading ' + (r.category || 'market') + ' protocols by market cap, and the mcap / TVL ratio each one contributes to the evidence above:' }));
+      var plist = el('table', { 'class': 'mini' }, el('tbody', null,
+        catStat.peer_examples.map(function (p) { return mrow(p.name, p.ratio.toFixed(3) + 'x'); })
+      ));
+      drawer.appendChild(plist);
+    }
     drawer.appendChild(el('h3', { text: 'The farm plan' }));
     var fs = r.farm_summary;
     drawer.appendChild(el('div', { 'class': 'grid2' },

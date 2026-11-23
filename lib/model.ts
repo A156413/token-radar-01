@@ -62,7 +62,7 @@ export interface Snapshot {
 }
 
 /** The model's version label, stated in the dashboard so a reader can cite the model that ranked a row. */
-export const MODEL_VERSION = 'peer-multiple-3';
+export const MODEL_VERSION = 'peer-multiple-4';
 
 /** Total rows on the board: the 40 watchlist slugs plus the best further pre-token protocols. */
 export const BOARD_ROWS = 250;
@@ -101,6 +101,8 @@ export interface CategoryStat {
   q3_ratio: number;
   multiple_low: number;
   multiple_high: number;
+  /** The category's largest trading peers by market cap, named, with the ratio each contributes. */
+  peer_examples: { name: string; ratio: number }[];
 }
 
 /** The model's market-wide figures, computed from the snapshot's trading protocols. */
@@ -181,6 +183,8 @@ export interface RadarData {
   market: MarketStats;
   rows: RadarRow[];
   live: LiveRow[];
+  /** The board's own headlines, computed from the same rows: what a reader should notice first. */
+  insights: { title: string; body: string }[];
 }
 
 /** Why the snapshot is not one this model can score. */
@@ -235,6 +239,7 @@ export function isPreToken(p: SnapshotProtocol): boolean {
  */
 export function marketStats(snapshot: Snapshot): MarketStats {
   const ratiosByCategory = new Map<string, number[]>();
+  const peersByCategory = new Map<string, { name: string; ratio: number; mcap: number }[]>();
   const all: number[] = [];
   for (const p of snapshot.protocols) {
     if (isPreToken(p) || p.mcap_usd === null || p.mcap_usd <= 0 || p.tvl_usd <= 0) continue;
@@ -244,6 +249,10 @@ export function marketStats(snapshot: Snapshot): MarketStats {
     const list = ratiosByCategory.get(key);
     if (list === undefined) ratiosByCategory.set(key, [ratio]);
     else list.push(ratio);
+    const peers = peersByCategory.get(key);
+    const entry = { name: p.name, ratio: round4(ratio), mcap: p.mcap_usd };
+    if (peers === undefined) peersByCategory.set(key, [entry]);
+    else peers.push(entry);
   }
   const globalMedian = all.length > 0 ? median(all) : 0.25;
   const globalQ1 = all.length > 0 ? quantile(all, 0.25) : globalMedian;
@@ -262,6 +271,10 @@ export function marketStats(snapshot: Snapshot): MarketStats {
         q3_ratio: round4(quantile(ratios, 0.75)),
         multiple_low: round4(shrink(ratios.length, quantile(ratios, 0.25), globalQ1)),
         multiple_high: round4(shrink(ratios.length, quantile(ratios, 0.75), globalQ3)),
+        peer_examples: (peersByCategory.get(category) ?? [])
+          .sort((a, b) => b.mcap - a.mcap || (a.name < b.name ? -1 : 1))
+          .slice(0, 3)
+          .map((e) => ({ name: e.name, ratio: e.ratio })),
       };
     })
     .sort((a, b) => b.multiple - a.multiple || (a.category < b.category ? -1 : 1));
@@ -542,6 +555,48 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
     }));
 }
 
+/** A whole-dollar figure the way the dashboard's insight cards state it. */
+function fmtUsdShort(n: number): string {
+  if (Math.abs(n) >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
+  if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
+  if (Math.abs(n) >= 1e3) return `$${Math.round(n / 1e3)}K`;
+  return `$${Math.round(n)}`;
+}
+
+/**
+ * The board's headlines, from its own rows: the largest early find below the floor, the fastest
+ * riser on the board, and the category whose trading peers pay the most per TVL dollar (among
+ * categories with at least five peers, so the claim rests on a bench, not a single print).
+ */
+export function boardInsights(board: BoardRow[], stats: MarketStats): { title: string; body: string }[] {
+  const out: { title: string; body: string }[] = [];
+  const early = board.filter((r) => !r.watchlist);
+  if (early.length > 0) {
+    const top = early[0]!;
+    out.push({
+      title: 'Biggest early find',
+      body: `${top.name} ranks #${top.rank} at ${fmtUsdShort(top.implied_value_usd)} implied — below the watchlist floor, found by the model, not by size.`,
+    });
+  }
+  const risers = board.filter((r) => r.change_7d !== null);
+  if (risers.length > 0) {
+    const top = [...risers].sort((a, b) => (b.change_7d ?? 0) - (a.change_7d ?? 0) || a.rank - b.rank)[0]!;
+    out.push({
+      title: 'Fastest riser on the board',
+      body: `${top.name}'s TVL grew ${top.change_7d!.toFixed(1)}% in seven days, the fastest on the board; momentum carries it to rank #${top.rank}.`,
+    });
+  }
+  const benched = stats.categories.filter((c) => c.peers >= 5);
+  if (benched.length > 0) {
+    const top = [...benched].sort((a, b) => b.multiple - a.multiple || b.peers - a.peers)[0]!;
+    out.push({
+      title: 'Richest peer evidence',
+      body: `${top.category}: ${top.peers} trading peers pay a median ${top.median_ratio.toFixed(2)}x mcap per TVL dollar — the strongest bench on the board.`,
+    });
+  }
+  return out;
+}
+
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: RadarData } {
   const board = buildBoard(snapshot);
@@ -561,6 +616,7 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     market: stats,
     rows: board,
     live,
+    insights: boardInsights(board, stats),
   };
   return { board, radar };
 }
