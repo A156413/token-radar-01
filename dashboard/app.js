@@ -1,9 +1,9 @@
 // Token Launch Radar — the dashboard's own code. It reads window.RADAR (data.js, written beside
 // dashboard/ by main.ts from the same board board.json carries) and renders three views: the ranked
-// pre-token board with search, filters and sorting; a detail drawer per protocol with the model's
-// arithmetic and the farm plan; the already-trading set, kept apart with the market's own values;
-// and a method view that states the model and shows the peer evidence behind every multiple.
-// No network, no framework: every byte on the page comes from data.js.
+// pre-token board with search, filters and sorting; a detail drawer per protocol with the fitted
+// model's arithmetic, the odds and the farm plan; the already-trading set, kept apart with the
+// market's own values; and a method view that states the fitted model, its two tests, the odds
+// table and the verdict rule. No network, no framework: every byte on the page comes from data.js.
 (function () {
   'use strict';
 
@@ -11,7 +11,7 @@
   var app = document.getElementById('app');
   if (!DATA || !app) return;
 
-  var state = { tab: 'board', q: '', category: 'all', chain: 'all', min: 0, wl: false, sort: 'rank', dir: 1, detail: null };
+  var state = { tab: 'board', q: '', category: 'all', chain: 'all', min: 0, wl: false, verdict: 'all', sort: 'rank', dir: 1, detail: null };
 
   // ---------- formatting ----------
   function fmtUsd(n) {
@@ -32,7 +32,7 @@
     if (days >= 30) return Math.round(days / 30.4) + ' mo';
     return Math.max(0, Math.round(days)) + ' days';
   }
-  function fmtMult(n) { return n.toFixed(2) + 'x'; }
+  function fmtOdds(n) { return Math.round(n * 100) + '%'; }
 
   // ---------- tiny DOM helper: everything is built with textContent, never string HTML ----------
   function el(tag, attrs) {
@@ -59,11 +59,12 @@
   document.getElementById('stamp').appendChild(el('div', null,
     el('div', { 'class': 'big', text: 'Snapshot ' + DATA.as_of }),
     el('div', { text: 'DefiLlama public API, fetched once and sealed' }),
-    el('div', { text: 'Model ' + DATA.model_version + ' - every figure derived from the snapshot' })
+    el('div', { text: 'Model ' + DATA.model_version + ' - fitted on the snapshot\u2019s own peers' })
   ));
   document.getElementById('foot').textContent =
     'Implied value is this board\u2019s own claim: what a token would be worth if the protocol\u2019s record stayed as it is. ' +
-    'It is not a prediction that a token will be issued, or when. A protocol shown here records no token in the snapshot; ' +
+    'Expected value weights that figure by the share of comparable protocols that record a token in the snapshot. ' +
+    'Neither is a prediction that a token will be issued, or when. A protocol shown here records no token in the snapshot; ' +
     'that is DefiLlama\u2019s record, not proof none exists. Farm plans are research notes, not financial advice.';
 
   // ---------- tabs ----------
@@ -86,6 +87,7 @@
     var q = state.q.trim().toLowerCase();
     return DATA.rows.filter(function (r) {
       if (state.wl && !r.watchlist) return false;
+      if (state.verdict !== 'all' && r.verdict !== state.verdict) return false;
       if (state.category !== 'all' && (r.category || 'Uncategorised') !== state.category) return false;
       if (state.chain !== 'all' && r.chains.indexOf(state.chain) < 0) return false;
       if (state.min > 0 && r.implied_value_usd < state.min) return false;
@@ -94,6 +96,7 @@
     });
   }
 
+  var VERDICT_ORDER = { farm: 3, thin: 2, skip: 1 };
   var SORTS = {
     rank: function (r) { return r.rank; },
     name: function (r) { return r.name.toLowerCase(); },
@@ -101,26 +104,50 @@
     change: function (r) { return r.change_7d === null ? -1e9 : r.change_7d; },
     age: function (r) { return r.age_days === null ? -1 : r.age_days; },
     ratio: function (r) { return r.implied_tvl_ratio; },
-    implied: function (r) { return r.implied_value_usd; }
+    implied: function (r) { return r.implied_value_usd; },
+    odds: function (r) { return r.odds; },
+    expected: function (r) { return r.expected_value_usd; },
+    verdict: function (r) { return VERDICT_ORDER[r.verdict]; }
   };
 
-  function renderBoard() {
-    var stats = el('div', { 'class': 'stats' },
-      stat('Protocols scanned', String(DATA.protocol_size), DATA.pre_token_size + ' record no token; the rest already trade'),
-      stat('Watchlist covered', DATA.watchlist_size + ' / ' + DATA.watchlist_size, 'every slug above the $' + Math.round(DATA.floor_usd / 1e6) + 'M floor, ranked'),
-      stat('Early finds', String(DATA.early_size), 'pre-token protocols below the floor, found by the model'),
-      stat('Peer evidence', DATA.market.peer_count + ' trading peers', 'market-wide median ' + DATA.market.global_median.toFixed(2) + 'x mcap / TVL')
+  function kpiStrip() {
+    var f = DATA.fit;
+    var items = [
+      [String(DATA.protocol_size), 'protocols audited'],
+      [DATA.watchlist_size + ' / ' + DATA.watchlist_size, 'watchlist covered'],
+      [String(DATA.board_size), 'board rows ranked'],
+      [String(f.peers), 'peers fitted'],
+      ['\u00d7' + f.loo.vs_global.toFixed(2), 'leave-one-out error vs market median'],
+      ['record odds', 'token odds from the peers\u2019 own record']
+    ];
+    return el('div', { 'class': 'kpibar' }, items.map(function (it) {
+      return el('div', { 'class': 'kpi' }, el('b', { text: it[0] }), el('span', { text: it[1] }));
+    }));
+  }
+
+  function integrityStrip() {
+    if (!DATA.integrity || !DATA.integrity.length) return null;
+    return el('div', { 'class': 'integrity' },
+      el('span', { 'class': 'ilabel', text: 'Self-checks:' }),
+      DATA.integrity.map(function (c) {
+        return el('span', { 'class': 'icheck ' + (c.ok ? 'ok' : 'bad'), text: (c.ok ? '\u2713 ' : '\u2717 ') + c.label });
+      })
     );
-    app.appendChild(stats);
+  }
+
+  function renderBoard() {
+    app.appendChild(kpiStrip());
+    var strip = integrityStrip();
+    if (strip) app.appendChild(strip);
 
     if (DATA.insights && DATA.insights.length) {
-      var strip = el('div', { 'class': 'stats' });
+      var cards = el('div', { 'class': 'stats insights' });
       DATA.insights.forEach(function (ins) {
-        strip.appendChild(el('div', { 'class': 'stat' },
+        cards.appendChild(el('div', { 'class': 'stat' },
           el('div', { 'class': 'k', text: ins.title }),
           el('div', { 'class': 's', text: ins.body })));
       });
-      app.appendChild(strip);
+      app.appendChild(cards);
     }
 
     var categories = unique(DATA.rows.map(function (r) { return r.category || 'Uncategorised'; }));
@@ -129,6 +156,14 @@
     search.addEventListener('input', function () { state.q = search.value; refreshTable(); });
     var catSel = selectBox(categories, state.category, 'All categories', function (v) { state.category = v; refreshTable(); });
     var chainSel = selectBox(chains, state.chain, 'All chains', function (v) { state.chain = v; refreshTable(); });
+    var verdictSel = el('select', { 'aria-label': 'Verdict filter' },
+      el('option', { value: 'all', text: 'All verdicts' }),
+      el('option', { value: 'farm', text: 'Farm' }),
+      el('option', { value: 'thin', text: 'Thin' }),
+      el('option', { value: 'skip', text: 'Skip' })
+    );
+    verdictSel.value = state.verdict;
+    verdictSel.addEventListener('change', function () { state.verdict = verdictSel.value; refreshTable(); });
     var minSel = el('select', { 'aria-label': 'Minimum implied value' },
       el('option', { value: '0', text: 'Any implied value' }),
       el('option', { value: '100000000', text: 'Implied $100M+' }),
@@ -145,6 +180,7 @@
       el('label', { text: 'Search' }), search,
       el('label', { text: 'Category' }), catSel,
       el('label', { text: 'Chain' }), chainSel,
+      el('label', { text: 'Verdict' }), verdictSel,
       el('label', { text: 'Size' }), minSel,
       el('label', { 'class': 'check' }, wlBox, 'Watchlist only'),
       el('span', { 'class': 'count', id: 'rowcount' })
@@ -175,14 +211,15 @@
       var maxImplied = DATA.rows[0].implied_value_usd;
       var head = el('thead', null, el('tr', null,
         th('rank', '#'), th('name', 'Protocol'), th(null, 'Category'), th(null, 'Chains'),
-        th('tvl', 'TVL'), th('change', '7d'), th('age', 'No-token age'), th('ratio', 'Implied x TVL'), th('implied', 'Implied value')
+        th('tvl', 'TVL'), th('change', '7d'), th('age', 'No-token age'), th('ratio', 'Impl. \u00d7 TVL'),
+        th('implied', 'Implied value'), th('odds', 'Odds'), th('expected', 'Expected'), th('verdict', 'Verdict')
       ));
       var body = el('tbody', null);
       rows.forEach(function (r) {
         var badge = r.watchlist ? el('span', { 'class': 'wl', text: 'WATCHLIST' }) : el('span', { 'class': 'early', text: 'EARLY' });
         var tr = el('tr', { tabindex: '0', 'class': r.rank <= 3 ? 'top3' : '' },
           el('td', { 'class': 'rank', text: String(r.rank) }),
-          el('td', null, el('div', { 'class': 'name' }, r.name, badge), el('div', { 'class': 'slug', text: r.slug })),
+          el('td', null, el('div', { 'class': 'name' }, r.name, badge, el('span', { 'class': 'slug', text: ' ' + r.slug }))),
           el('td', { 'class': 'cat', text: r.category || 'Uncategorised' }),
           el('td', { 'class': 'chains', text: r.chains.slice(0, 3).join(', ') + (r.chains.length > 3 ? ' +' + (r.chains.length - 3) : '') }),
           el('td', { 'class': 'num', text: fmtUsd(r.tvl_usd) }),
@@ -191,7 +228,10 @@
           el('td', { 'class': 'num', text: r.implied_tvl_ratio.toFixed(2) + 'x' }),
           el('td', null, el('div', { 'class': 'bar' },
             el('span', { 'class': 'fill', style: 'width:' + Math.max(3, Math.round(100 * r.implied_value_usd / maxImplied)) + '%' }),
-            el('span', { 'class': 'val', text: fmtUsd(r.implied_value_usd) })))
+            el('span', { 'class': 'val', text: fmtUsd(r.implied_value_usd) }))),
+          el('td', { 'class': 'num', text: fmtOdds(r.odds) }),
+          el('td', { 'class': 'num', text: fmtUsd(r.expected_value_usd) }),
+          el('td', null, el('span', { 'class': 'verdict v-' + r.verdict, text: r.verdict.toUpperCase() }))
         );
         tr.addEventListener('click', function () { openDetail(r.slug); });
         tr.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDetail(r.slug); } });
@@ -214,9 +254,6 @@
     }
   }
 
-  function stat(k, v, s) {
-    return el('div', { 'class': 'stat' }, el('div', { 'class': 'k', text: k }), el('div', { 'class': 'v', text: v }), el('div', { 'class': 's', text: s }));
-  }
   function unique(list) {
     var seen = {}, out = [];
     list.forEach(function (v) { if (!seen[v]) { seen[v] = 1; out.push(v); } });
@@ -250,8 +287,9 @@
     drawer.appendChild(el('div', { 'class': 'hero' },
       el('div', { 'class': 'k', text: 'Implied token value' }),
       el('div', { 'class': 'v', text: fmtUsd(r.implied_value_usd) }),
-      el('div', { 'class': 's', text: r.implied_tvl_ratio.toFixed(2) + 'x its TVL of ' + fmtUsd(r.tvl_usd) + ', at the ' + (r.category || 'market') + ' peer multiple' }),
-      el('div', { 'class': 's', text: 'Peer range ' + fmtUsd(m.value_low_usd) + ' - ' + fmtUsd(m.value_high_usd) + ': the same arithmetic at the category\u2019s lower and upper peer quartiles, so the spread of the evidence is on the page, not hidden behind the point value' })
+      el('div', { 'class': 's', text: r.implied_tvl_ratio.toFixed(2) + 'x its TVL of ' + fmtUsd(r.tvl_usd) + ', at the fitted multiple of ' + m.fitted_multiple.toFixed(2) + 'x' }),
+      el('div', { 'class': 's', text: 'Expected value ' + fmtUsd(r.expected_value_usd) + ' = implied \u00d7 ' + fmtOdds(r.odds) + ', the share of ' + m.odds_band.toLowerCase() + ' protocols that record a token in this snapshot' }),
+      el('div', { 'class': 's', text: 'Peer range ' + fmtUsd(m.value_low_usd) + ' - ' + fmtUsd(m.value_high_usd) + ' (the category\u2019s peer quartiles); model error band ' + fmtUsd(m.conf_low_usd) + ' - ' + fmtUsd(m.conf_high_usd) + ' (the fit\u2019s own measured error, conformal 80%)' })
     ));
     drawer.appendChild(el('div', { 'class': 'grid2' },
       kv('TVL', fmtUsd(r.tvl_usd)), kv('TVL change, 7d', fmtPct(r.change_7d)),
@@ -263,18 +301,18 @@
     drawer.appendChild(el('h3', { text: 'How the model gets this number' }));
     drawer.appendChild(el('table', { 'class': 'mini' }, el('tbody', null,
       mrow('TVL (snapshot)', fmtUsd(r.tvl_usd)),
-      mrow('Category multiple (' + m.category_peers + ' trading peers)', m.category_multiple.toFixed(3) + 'x'),
-      mrow('Momentum, 7d change ' + fmtPct(r.change_7d), m.growth_multiplier.toFixed(3) + 'x'),
-      mrow('Track record, ' + fmtAge(r.age_days) + ' with no token', m.maturity_multiplier.toFixed(3) + 'x'),
-      mrow('Breadth, ' + r.chains.length + (r.chains.length === 1 ? ' chain' : ' chains'), m.breadth_multiplier.toFixed(3) + 'x'),
-      mrow('Implied value', fmtUsd(r.implied_value_usd)),
-      mrow('At the peer quartiles instead', fmtUsd(m.value_low_usd) + ' - ' + fmtUsd(m.value_high_usd))
+      mrow('Fitted multiple (on ' + DATA.fit.peers + ' peers, category offset \u00d7' + m.category_offset.toFixed(2) + ')', m.fitted_multiple.toFixed(3) + 'x'),
+      mrow('= Implied value', fmtUsd(r.implied_value_usd)),
+      mrow('At the peer quartiles instead', fmtUsd(m.value_low_usd) + ' - ' + fmtUsd(m.value_high_usd)),
+      mrow('Across the model\u2019s own error band', fmtUsd(m.conf_low_usd) + ' - ' + fmtUsd(m.conf_high_usd)),
+      mrow('Token odds, ' + m.odds_band.toLowerCase() + ' (' + (m.odds_basis === 'category' ? 'band-and-category share' : 'age-band share') + ')', fmtOdds(r.odds)),
+      mrow('Expected value (implied \u00d7 odds)', fmtUsd(r.expected_value_usd))
     )));
     var catStat = null;
     DATA.market.categories.forEach(function (c) { if (c.category === (r.category || 'Uncategorised')) catStat = c; });
     if (catStat && catStat.peer_examples && catStat.peer_examples.length) {
-      drawer.appendChild(el('h3', { text: 'The peers behind the multiple' }));
-      drawer.appendChild(el('p', { 'class': 'sub', text: 'The largest trading ' + (r.category || 'market') + ' protocols by market cap, and the mcap / TVL ratio each one contributes to the evidence above:' }));
+      drawer.appendChild(el('h3', { text: 'The peers behind the evidence' }));
+      drawer.appendChild(el('p', { 'class': 'sub', text: 'The largest trading ' + (r.category || 'market') + ' protocols by market cap, and the mcap / TVL ratio each one contributes to the category\u2019s evidence:' }));
       var plist = el('table', { 'class': 'mini' }, el('tbody', null,
         catStat.peer_examples.map(function (p) { return mrow(p.name, p.ratio.toFixed(3) + 'x'); })
       ));
@@ -283,13 +321,15 @@
     drawer.appendChild(el('h3', { text: 'The farm plan' }));
     var fs = r.farm_summary;
     drawer.appendChild(el('div', { 'class': 'grid2' },
+      kv('Verdict', r.verdict.toUpperCase() + ' - position ' + fmtUsd(m.position_value_usd) + ' vs plan cost ' + fmtUsd(m.plan_cost_usd)),
+      kv('Deposit tier', fmtUsd(fs.deposit_tier_usd)),
       kv('Capital', fmtUsd(fs.capital_usd)), kv('Fees over the hold', 'about ' + fmtUsd(fs.fees_usd)),
       kv('Hold', fs.hold_days + ' days'), kv('Time', 'about ' + fs.minutes_per_week + ' min a week')
     ));
     var plan = el('ol', { 'class': 'plan' });
     r.farm_steps.forEach(function (s) { plan.appendChild(el('li', { text: s })); });
     drawer.appendChild(plan);
-    drawer.appendChild(el('p', { 'class': 'sub', text: 'Plan figures come from this protocol\u2019s own record: capital scaled to its TVL, fees from its first chain, the hold from its age.' }));
+    drawer.appendChild(el('p', { 'class': 'sub', text: 'Plan figures come from this protocol\u2019s own record: capital scaled to its TVL, fees from its first chain, the hold from its age. The verdict prices the plan against the pro-rata slice of expected value a position of this size represents; the method view states the rule and its constants.' }));
     scrim.hidden = false;
     drawer.hidden = false;
     drawer.scrollTop = 0;
@@ -302,8 +342,8 @@
     app.appendChild(el('div', { 'class': 'method' },
       el('h2', { text: 'Already trading - set aside on purpose' }),
       el('p', null, 'These protocols\u2019 tokens already trade, so the radar does not rank them: it shows the market\u2019s own market cap beside TVL. ' +
-        'They matter to the board as evidence - their market-cap-to-TVL ratios are the peer multiples the model applies to the pre-token protocols. ' +
-        'The ' + DATA.market.peer_count + ' trading protocols with both figures give a market-wide median of ' + DATA.market.global_median.toFixed(2) + 'x.')
+        'They matter to the board as evidence - the ' + DATA.fit.peers + ' of them that report both figures are the peers the value model is fitted on, ' +
+        'and their market-cap-to-TVL ratios make up the category evidence on the method view.')
     ));
     var body = el('tbody', null);
     DATA.live.forEach(function (r) {
@@ -327,54 +367,98 @@
 
   // ---------- method ----------
   function renderMethod() {
+    var f = DATA.fit, loo = f.loo, wf = f.walk_forward, a = DATA.audit;
+    var c = f.coefficients;
     var wrap = el('div', { 'class': 'method' });
     wrap.appendChild(el('h2', { text: 'How the ranking works' }));
     wrap.appendChild(el('p', null, 'Every number on the board comes from the sealed snapshot of ' + DATA.as_of + ' - TVL, the seven-day TVL change, ' +
       'the date DefiLlama first tracked the protocol, its chains and its category - and from the snapshot\u2019s own trading protocols. ' +
-      'No name is special-cased and nothing is looked up: the same function scores every row, and each protocol\u2019s detail view shows its arithmetic.'));
-    wrap.appendChild(el('div', { 'class': 'formula', text: 'implied value = TVL x category multiple x momentum x track record x breadth' }));
-    wrap.appendChild(el('h3', { text: '1. The category multiple - what the market pays per TVL dollar' }));
-    wrap.appendChild(el('p', null, 'For each protocol whose token already trades, the snapshot gives a market cap and a TVL: their ratio is what the market pays ' +
-      'for a dollar of that protocol\u2019s TVL. Ratios are winsorised to [0.02, 3] so one broken print cannot steer a category. A category\u2019s multiple is the median of ' +
-      'its peers\u2019 ratios, shrunk toward the market-wide median (' + DATA.market.global_median.toFixed(2) + 'x over ' + DATA.market.peer_count + ' peers) by the peer count: ' +
-      'multiple = (n x median + 5 x global) / (n + 5). A category with forty peers stands on its own; one with two borrows the market\u2019s strength. ' +
-      'A category with no trading peer uses the market-wide median.'));
-    wrap.appendChild(el('h3', { text: '2. Momentum - is the TVL arriving or leaving?' }));
-    wrap.appendChild(el('p', null, 'The seven-day change is clamped to [-30%, +50%] (unreported counts as flat) and carried at 1.2 weight: ' +
-      'momentum = 1 + change/100 x 1.2, from 0.64x for a protocol shrinking fast to 1.60x for one growing 50% in a week.'));
-    wrap.appendChild(el('h3', { text: '3. Track record - how long with no token' }));
-    wrap.appendChild(el('p', null, 'A protocol that has held TVL for years with no token is a different claim from one listed last month. ' +
-      'Track record runs from 0.78x for a brand-new listing to 1.22x at four years (0.78 + 0.44 x min(age, 1460 days) / 1460). ' +
-      'An unrecorded listing date counts as 730 days, the neutral middle, a multiplier of exactly 1.00.'));
-    wrap.appendChild(el('h3', { text: '4. Breadth - distribution a launch can reach' }));
-    wrap.appendChild(el('p', null, 'Each chain past the first adds 3%, up to seven extra chains (1.21x): a protocol already operating on many chains ' +
-      'puts a future token in more hands on day one.'));
-    wrap.appendChild(el('h3', { text: '5. The range - how far apart the peers are' }));
-    wrap.appendChild(el('p', null, 'A point value hides the disagreement inside a category, so every row also carries a range: the same arithmetic with the ' +
-      'category\u2019s multiple replaced by its shrunk lower and upper peer quartiles (the 25th and 75th percentile ratios, shrunk toward the market-wide quartiles ' +
-      'with the same peer-count weight). Where the peers agree, the range is narrow and the point value rests on solid evidence; where they scatter, the range ' +
-      'says so on the page. Each protocol\u2019s detail view shows its range beside its value, and the evidence table below carries every category\u2019s quartiles.'));
-    wrap.appendChild(el('h3', { text: 'Who is on the board' }));
-    wrap.appendChild(el('p', null, 'The board holds ' + DATA.board_size + ' rows: every one of the ' + DATA.watchlist_size + ' watchlist slugs (pre-token protocols at or above the $' +
-      Math.round(DATA.floor_usd / 1e6) + 'M floor, the floor the coverage check holds), plus the ' + DATA.early_size + ' highest-valued further pre-token protocols under the same exclusions - ' +
-      'no exchanges, no bridges or restaked wrappers of a token that already trades, no versioned pools. Small independent staking products below the floor are admitted: they do launch tokens. ' +
-      'Protocols whose token already trades are never ranked; they sit in the Already trading view at the market\u2019s own values.'));
-    wrap.appendChild(el('h3', { text: 'The peer evidence, category by category' }));
-    var body = el('tbody', null);
-    DATA.market.categories.forEach(function (c) {
-      body.appendChild(el('tr', null,
-        el('td', { text: c.category }),
-        el('td', { 'class': 'num', text: String(c.peers) }),
-        el('td', { 'class': 'num', text: c.median_ratio.toFixed(3) + 'x' }),
-        el('td', { 'class': 'num', text: c.multiple.toFixed(3) + 'x' }),
-        el('td', { 'class': 'num', text: c.q1_ratio.toFixed(3) + 'x - ' + c.q3_ratio.toFixed(3) + 'x' })
+      'No name is special-cased, nothing is looked up and no constant in the value model is chosen by hand.'));
+    wrap.appendChild(el('div', { 'class': 'formula', text: 'implied value = exp( fitted line + category offset )    \u00b7    expected value = implied \u00d7 odds' }));
+    wrap.appendChild(el('h3', { text: '1. The fit - the peers price the model, not a table of constants' }));
+    wrap.appendChild(el('p', null, 'The ' + f.peers + ' protocols whose token trades and that report both a market cap and a TVL are the evidence. On them the model fits, ' +
+      'by least squares, log(market cap) on log(TVL), the seven-day change (clamped to [-30%, +50%], unreported counts as flat) and log(1 + age in days), ' +
+      'an unrecorded listing date counting as 730 days. Fitted on this snapshot, the line is: log mcap = ' + c[0].toFixed(2) + ' + ' + c[1].toFixed(2) +
+      ' \u00d7 log TVL ' + (c[2] < 0 ? '\u2212 ' + Math.abs(c[2]).toFixed(3) : '+ ' + c[2].toFixed(3)) + ' \u00d7 7d change ' +
+      (c[3] < 0 ? '\u2212 ' + Math.abs(c[3]).toFixed(2) : '+ ' + c[3].toFixed(2)) + ' \u00d7 log(1 + age). Read it as the peers state it: a TVL dollar carries about half its ' +
+      'weight into market cap in log space, a hot week prices lower not higher, and age given TVL adds nothing. Each category then carries an offset: the median ' +
+      'of its peers\u2019 residuals against the line, shrunk toward zero by the peer count (offset = n \u00d7 median / (n + 5)).'));
+    wrap.appendChild(el('h3', { text: '2. The tests - the model is scored on peers it did not fit' }));
+    var tBody = el('tbody', null,
+      el('tr', null,
+        el('td', { text: 'Leave-one-out (each of the ' + loo.test + ' peers predicted by a model fitted without it)' }),
+        el('td', { 'class': 'num', text: loo.fitted.toFixed(2) }),
+        el('td', { 'class': 'num', text: loo.global_median.toFixed(2) }),
+        el('td', { 'class': 'num', text: loo.category_model.toFixed(2) })),
+      el('tr', null,
+        el('td', { text: 'Walk-forward (fitted on the ' + wf.train + ' older dated peers, tested on the ' + wf.test + ' newer)' }),
+        el('td', { 'class': 'num', text: wf.fitted.toFixed(2) }),
+        el('td', { 'class': 'num', text: wf.global_median.toFixed(2) }),
+        el('td', { 'class': 'num', text: wf.category_model.toFixed(2) }))
+    );
+    wrap.appendChild(el('table', null,
+      el('thead', null, el('tr', null, el('th', { text: 'Test' }), el('th', { text: 'This fit' }), el('th', { text: 'Market-median multiple' }), el('th', { text: 'Category model (peer-multiple-4)' }))),
+      tBody));
+    wrap.appendChild(el('p', null, 'The figures are median |log error| - the typical factor by which a prediction misses is e to that power; lower is better. Both baselines are ' +
+      'recomputed inside each test on the same training peers: leave-one-out, the fit\u2019s median error is ' + loo.vs_global.toFixed(2) + '\u00d7 smaller than the market-median multiple\u2019s and ' +
+      loo.vs_category.toFixed(2) + '\u00d7 smaller than the previous category model\u2019s; walk-forward, ' + wf.vs_global.toFixed(2) + '\u00d7 and ' + wf.vs_category.toFixed(2) + '\u00d7.'));
+    wrap.appendChild(el('h3', { text: '3. The odds - how often a token has come, from the record' }));
+    var oddsPara = el('p', null, 'Each row\u2019s odds are the share of comparable protocols that record a token in this snapshot: its age band\u2019s share, or - where the ' +
+      'band-and-category cell holds at least ten protocols - that cell\u2019s own share. The words matter: this is a share of a record, the peers\u2019 own history, ' +
+      'not a forecast that any protocol will issue a token or when, and the odds never move a rank - the board ranks by implied value, and expected value ' +
+      '(implied \u00d7 odds) rides beside it as the odds-weighted companion figure.');
+    var oBody = el('tbody', null);
+    DATA.odds.bands.forEach(function (b) {
+      oBody.appendChild(el('tr', null,
+        el('td', { text: b.label }),
+        el('td', { 'class': 'num', text: String(b.protocols) }),
+        el('td', { 'class': 'num', text: String(b.record_token) }),
+        el('td', { 'class': 'num', text: Math.round(b.share * 100) + '%' })
       ));
     });
     wrap.appendChild(el('table', null,
-      el('thead', null, el('tr', null, el('th', { text: 'Category' }), el('th', { text: 'Trading peers' }), el('th', { text: 'Median mcap / TVL' }), el('th', { text: 'Multiple used' }), el('th', { text: 'Peer quartiles' }))),
+      el('thead', null, el('tr', null, el('th', { text: 'Age band (first tracked)' }), el('th', { text: 'Protocols' }), el('th', { text: 'Record a token' }), el('th', { text: 'Share' }))),
+      oBody));
+    wrap.appendChild(oddsPara);
+    wrap.appendChild(el('h3', { text: '4. The two ranges - peer spread is not model error' }));
+    wrap.appendChild(el('p', null, 'Every row carries two ranges and they are different claims. The peer range applies the category\u2019s own spread - its shrunk lower and ' +
+      'upper peer quartiles in place of its median - around the fitted point: how far apart the peers are. The error band applies the fit\u2019s conformal half-width ' +
+      'from the tests above: how far off the model itself has been. The fit is better than its baselines, and still rough - the 80th percentile of its leave-one-out ' +
+      'residuals is ' + f.conformal_log.toFixed(2) + ' in log space, so the band runs from a row\u2019s implied value divided by ' + Math.exp(f.conformal_log).toFixed(1) +
+      ' to it multiplied by the same: the model\u2019s own measured miss, printed rather than hidden. A row can sit on agreeing peers and still carry a wide error band; ' +
+      'the page shows both rather than letting one point value pretend to be exact.'));
+    wrap.appendChild(el('h3', { text: '5. The verdict - every row priced against its own plan' }));
+    wrap.appendChild(el('p', null, 'A farm plan costs its fees plus its capital priced as tied up at 5% a year over the hold. Against that cost, the row sets the pro-rata ' +
+      'slice of its expected value that a position of the plan\u2019s own size represents (expected value \u00d7 capital / TVL). The verdict is farm when the slice covers the ' +
+      'cost at least once over, thin when it covers at least 0.30 of it, and skip below that. No figure from outside the snapshot and the plan enters the rule, ' +
+      'and no share of a future token supply is assumed anywhere: the slice is a way to compare rows, stated as such. Deposit tiers follow the plan\u2019s capital: ' +
+      '$50 below $25M of TVL, rising through $100 and $150 to $250 at $500M and $500 at $2B.'));
+    wrap.appendChild(el('h3', { text: 'Who is on the board - all ' + DATA.protocol_size + ' protocols accounted for' }));
+    wrap.appendChild(el('p', null, 'Of the snapshot\u2019s ' + a.total + ' protocols: ' + a.fitted_peers + ' are fitted peers and ' + a.traded_other + ' more already trade without both ' +
+      'figures, so they stand as evidence of a token but not of a price; ' + a.pre_token + ' record no token. The board holds ' + a.board_rows + ' of those: every one of the ' +
+      DATA.watchlist_size + ' watchlist slugs (pre-token protocols at or above the $' + Math.round(DATA.floor_usd / 1e6) + 'M floor, the floor the coverage check holds), plus the ' +
+      DATA.early_size + ' highest-valued further pre-token protocols under the same exclusions. The other ' + a.off_board + ' pre-token protocols are off the board for stated reasons: ' +
+      a.excluded.category + ' in excluded categories (bridges, restaked wrappers of tokens that already trade, exchanges), ' + a.excluded.floor_staking +
+      ' staking wrappers at or above the floor, ' + a.excluded.versioned + ' versioned pools of another protocol, ' + a.excluded.wrapped_name +
+      ' wrapped or staked products by name, ' + a.excluded.exchange_name + ' exchange products by name, and ' + a.excluded.below_cut + ' simply below the board\u2019s cut. ' +
+      'Small independent staking products below the floor are admitted: they do launch tokens. Protocols whose token already trades are never ranked; they sit in the Already trading view at the market\u2019s own values.'));
+    wrap.appendChild(el('h3', { text: 'The peer evidence, category by category' }));
+    var body = el('tbody', null);
+    DATA.market.categories.forEach(function (ct) {
+      body.appendChild(el('tr', null,
+        el('td', { text: ct.category }),
+        el('td', { 'class': 'num', text: String(ct.peers) }),
+        el('td', { 'class': 'num', text: ct.median_ratio.toFixed(3) + 'x' }),
+        el('td', { 'class': 'num', text: ct.multiple.toFixed(3) + 'x' }),
+        el('td', { 'class': 'num', text: ct.q1_ratio.toFixed(3) + 'x - ' + ct.q3_ratio.toFixed(3) + 'x' })
+      ));
+    });
+    wrap.appendChild(el('table', null,
+      el('thead', null, el('tr', null, el('th', { text: 'Category' }), el('th', { text: 'Trading peers' }), el('th', { text: 'Median mcap / TVL' }), el('th', { text: 'Multiple (peer-multiple-4 baseline)' }), el('th', { text: 'Peer quartiles' }))),
       body));
-    wrap.appendChild(el('div', { 'class': 'note', text: 'Read the board as a claim, not a forecast: it says what a token would be worth if the protocol\u2019s record stayed as it is. ' +
-      'It does not say a token will be issued, or when, and a protocol that records no token in DefiLlama\u2019s data may still have one the record does not carry.' }));
+    wrap.appendChild(el('div', { 'class': 'note', text: 'Read the board as a claim, not a forecast: it says what a token would be worth if the protocol\u2019s record stayed as it is, ' +
+      'weighted by how often comparable protocols record a token at all. It does not say a token will be issued, or when, and a protocol that records no token in ' +
+      'DefiLlama\u2019s data may still have one the record does not carry.' }));
     app.appendChild(wrap);
   }
 
@@ -390,6 +474,7 @@
       if (k === 'chain') state.chain = v;
       if (k === 'q') state.q = v;
       if (k === 'wl') state.wl = v === '1';
+      if (k === 'verdict') state.verdict = v;
       if (k === 'detail') state.detail = v;
     });
   }

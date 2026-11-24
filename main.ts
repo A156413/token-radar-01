@@ -50,6 +50,30 @@ if (issue !== null) {
   process.exit(1);
 }
 
+// The integrity strip the dashboard's cover carries: checks this program runs on its own board
+// before writing it, each computed from the board and the snapshot, none of them asserted blind.
+{
+  // A second, independent build of the whole radar: the two runs must agree byte for byte.
+  const again = buildRadar(snapshot);
+  const rerun = JSON.stringify({ board: again.board, radar: { ...again.radar, integrity: [] } });
+  const first = JSON.stringify({ board, radar: { ...radar, integrity: [] } });
+  const covered = snapshot.watchlist.filter((s) => board.some((r) => r.slug === s)).length;
+  const ranksSorted = board.every(
+    (r, i) => r.rank === i + 1 && (i === 0 || board[i - 1]!.implied_value_usd >= r.implied_value_usd),
+  );
+  const stepsOk = board.every(
+    (r) => r.farm_steps.length >= 3 && r.farm_steps.length <= 12 && r.farm_steps.every((s) => { const n = s.trim().length; return n >= 20 && n <= 600; }),
+  );
+  const fromSnapshot = board.every((r) => snapshot.protocols.some((p) => p.slug === r.slug));
+  radar.integrity = [
+    { label: `coverage ${covered}/${snapshot.watchlist.length}`, ok: covered === snapshot.watchlist.length },
+    { label: 'ranks in value order', ok: ranksSorted },
+    { label: 'two runs byte-identical', ok: rerun === first },
+    { label: 'farm steps 3-12, 20-600 chars', ok: stepsOk },
+    { label: 'all rows from this snapshot', ok: fromSnapshot },
+  ];
+}
+
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
 writeFileSync(join(out, 'data.js'), dataScript(radar));
